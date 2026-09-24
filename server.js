@@ -32,44 +32,55 @@ function smtpConfig() {
 
 let transporter = null;
 
-let resendKey = process.env.RESEND_API_KEY || "";
-let sendgridKey = process.env.SENDGRID_API_KEY || "";
-let sendgridFrom = process.env.SENDGRID_FROM || "";
+const resendKey = process.env.RESEND_API_KEY || "";
+const sendgridKey = process.env.SENDGRID_API_KEY || "";
+const sendgridFrom = process.env.SENDGRID_FROM || "";
+const brevoKey = process.env.BREVO_API_KEY || "";
+const brevoSender =
+  process.env.BREVO_SENDER || "tfmwaqar@gmail.com";
 
 if (resendKey) {
   console.log("EMAIL: using Resend API");
 } else if (sendgridKey) {
   console.log("EMAIL: using SendGrid API");
+} else if (brevoKey) {
+  console.log("EMAIL: using Brevo API");
 } else {
   const smtp = smtpConfig();
 
   if (!smtp) {
     console.error(
-      "EMAIL: no provider configured. Set RESEND_API_KEY or SENDGRID_API_KEY, " +
-      "or SMTP_USER/SMTP_PASS env vars (or create backend/smtp.json)."
+      "EMAIL: no provider configured. Set RESEND_API_KEY, " +
+        "SENDGRID_API_KEY, BREVO_API_KEY, or SMTP_USER/SMTP_PASS " +
+        "env vars (or create backend/smtp.json). " +
+        "The server will start, but /send-otp will fail until " +
+        "a provider is configured."
     );
-    process.exit(1);
+  } else {
+    FROM = process.env.EMAIL_FROM || `"Voice Chat" <${smtp.user}>`;
+
+    const nodemailer = require("nodemailer");
+
+    transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: Number(smtp.port) || 587,
+      secure: smtp.secure,
+      auth: {
+        user: smtp.user,
+        pass: smtp.pass,
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 30000,
+    });
   }
-
-  FROM = `"Voice Chat" <${smtp.user}>`;
-
-  const nodemailer = require("nodemailer");
-
-  transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: false,
-    auth: {
-      user: smtp.user,
-      pass: smtp.pass,
-    },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 30000,
-  });
 }
 
 async function sendEmail(to, subject, text) {
+  if (!resendKey && !sendgridKey && !brevoKey && !transporter) {
+    throw new Error("no email provider configured");
+  }
+
   if (resendKey) {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -95,34 +106,67 @@ async function sendEmail(to, subject, text) {
   }
 
   if (sendgridKey) {
-    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${sendgridKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        personalizations: [
-          {
-            to: [{ email: to }],
-          },
-        ],
-        from: {
-          email: sendgridFrom,
+    const res = await fetch(
+      "https://api.sendgrid.com/v3/mail/send",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${sendgridKey}`,
+          "Content-Type": "application/json",
         },
-        subject,
-        content: [
-          {
-            type: "text/plain",
-            value: text,
+        body: JSON.stringify({
+          personalizations: [
+            {
+              to: [{ email: to }],
+            },
+          ],
+          from: {
+            email: sendgridFrom || FROM,
           },
-        ],
-      }),
-    });
+          subject,
+          content: [
+            {
+              type: "text/plain",
+              value: text,
+            },
+          ],
+        }),
+      }
+    );
 
     if (!res.ok) {
       throw new Error(
         "SendGrid API " + res.status + ": " + (await res.text())
+      );
+    }
+
+    return;
+  }
+
+  if (brevoKey) {
+    const res = await fetch(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        method: "POST",
+        headers: {
+          "api-key": brevoKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: {
+            name: "Voice Chat",
+            email: brevoSender,
+          },
+          to: [{ email: to }],
+          subject,
+          textContent: text,
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(
+        "Brevo API " + res.status + ": " + (await res.text())
       );
     }
 
@@ -151,7 +195,9 @@ app.get("/health", (req, res) => {
 app.post("/send-otp", (req, res) => {
   const email = String(
     (req.body && req.body.email) || ""
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({
@@ -159,7 +205,9 @@ app.post("/send-otp", (req, res) => {
     });
   }
 
-  const code = String(crypto.randomInt(100000, 1000000));
+  const code = String(
+    crypto.randomInt(100000, 1000000)
+  );
 
   codes.set(email, {
     code,
@@ -178,7 +226,11 @@ app.post("/send-otp", (req, res) => {
       res.json({ ok: true });
     })
     .catch((err) => {
-      console.error("Email send failed:", err.message);
+      console.error(
+        "Email send failed:",
+        err.message
+      );
+
       codes.delete(email);
 
       res.status(502).json({
@@ -190,7 +242,9 @@ app.post("/send-otp", (req, res) => {
 app.post("/verify-otp", (req, res) => {
   const email = String(
     (req.body && req.body.email) || ""
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
 
   const code = String(
     (req.body && req.body.code) || ""
@@ -220,5 +274,7 @@ app.post("/verify-otp", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("OTP server running on port " + PORT);
+  console.log(
+    "OTP server running on port " + PORT
+  );
 });
