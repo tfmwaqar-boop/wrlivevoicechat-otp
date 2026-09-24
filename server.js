@@ -4,7 +4,6 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT) || 3000;
 
 let FROM = process.env.EMAIL_FROM || "Voice Chat <no-reply@example.com>";
@@ -134,6 +133,6 @@ app.post("/verify-otp", (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, HOST, () =>
-  console.log("OTP server running on http://" + HOST + ":" + PORT)
+app.listen(PORT, () =>
+  console.log("OTP server running on port " + PORT)
 );
